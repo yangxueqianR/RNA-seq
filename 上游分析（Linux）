@@ -1,0 +1,56 @@
+#!/bin/sh
+
+#原始数据存放路径
+rawdata='/home/wangyiqi/wyq/ncRNA/data/clean/'
+#参考基因组路径
+refhg38='/home/xueqian/lab_RNA-seq/reference_genome/hg38/genome'
+#注释路径
+annodata='/home/xueqian/lab_RNA-seq/annotation/gencode.v32.gff3'
+#输出结果的路径
+qcoutput='/home/xueqian/lab_RNA-seq/rnaseq_sh/qc/'
+hisat2output='/home/xueqian/lab_RNA-seq/rnaseq_sh/hisat2result/'
+samtoolsoutput='/home/xueqian/lab_RNA-seq/rnaseq_sh/samtools_output/'
+countresult='/home/xueqian/lab_RNA-seq/rnaseq_sh/htseqcount_result/'
+
+#将原始数据文件名放入文本中，vi编辑（可用正则）
+ls $rawdata*clean.fq.gz > n1
+
+#原始数据qc
+while read id
+do 
+         fastp -i $rawdata$id'_1.fq.gz' -I $rawdata$id'_2.fq.gz'  -o $rawdata$id'_1.fq.gz' -O $qcoutput$id'_2.fq.gz' -z 4 -j $qcReportPath$id'.json' -h $qcReportPath$id'.html' -w 30
+done < n1
+
+#比对
+while read id
+do   
+         hisat2 -p 20 -x $refhg38 -1 $rawdata$id'_1.clean.fq.gz' -2 $rawdata$id'_2.clean.fq.gz' -S $htseq2output$id'.sam' ; 
+done< n1
+
+#将比对输出结果文件名放入文本中，vi编辑（也可用正则）
+ls $htseq2output > name
+
+#转换成bam文件
+while read id ;do 
+samtools view -@ 12 -S $htseq2output/$id'.sam' -b > $samtoolsoutput$id'.bam'
+samtools sort $samtoolsoutput$id'.bam' -o $samtoolsoutput$id'_sort.bam'
+samtools index $samtoolsoutput$id'_sort.bam'
+done < name
+
+#比对结果qc
+bedPath='/home/xueqian/lab_RNA-seq/rnaseq_sh/samtools_output/RseQC/hg38_RefSeq'
+while read id ;
+do 
+        bam_stat.py -i $samtoolsoutput$id'_sort.bam' > $samtoolsoutput$id'.bamqc'
+        read_distribution.py -i $samtoolsoutput$id'_sort.bam' -r $bedPath > $samtoolsoutput$id'.readDistr'
+done < name
+
+#计数
+while read id 
+do 
+        htseq-count -r pos -f bam $samtoolsoutput/$id'_sort.bam' $annodata > $countresult/$id'.txt' 2> $countresult/$id'.cnt' 
+done < name
+
+#将得到的txt合并成一个表达矩阵
+paste *.txt > expr.txt
+
