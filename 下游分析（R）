@@ -1,0 +1,234 @@
+#载入表达矩阵，处理矩阵数据
+rm(list = ls())
+a=read.table('d:/R/expr.txt')
+a=a[,c(1,2,4,6,8,10,12)]
+exprSet = a[1:60564,]
+rownames(exprSet) = exprSet[,1]
+exprSet = exprSet[,-1]
+colnames(exprSet) = c('H1','H2','H4','N1', 'N2','N4')
+exprSet = as.matrix(exprSet)
+group_list=c('H','H','H','N', 'N','N')
+
+#DEG差异分析（DEseq2）
+library(DESeq2)
+colData <- data.frame(row.names=colnames(exprSet), 
+                      group_list=group_list) 
+
+
+dds <- DESeqDataSetFromMatrix(countData = exprSet,
+                              colData = colData,
+                              design =~group_list)
+
+dds <- DESeq(dds) 
+res <- results(dds, 
+               contrast=c("group_list","H","N"))
+resOrdered <- res[order(res$padj),]
+DEG = as.data.frame(resOrdered)
+save(DEG,file = "DEseq.Rdata")
+
+#保存差异基因
+diff_gene_deseq2 <-subset(res, pvalue < 0.1 & abs(log2FoldChange) > 1)
+write.csv(diff_gene_deseq2,file= "DEG0.5.csv")
+
+#heatmap
+library(pheatmap)
+choose_gene = head(rownames(DEG),100)
+choose_matrix = exprSet[choose_gene,]
+choose_matrix = t(scale(t(choose_matrix)))
+pheatmap(choose_matrix,filename = 'DEG_top100_heatmap.png')
+
+#volcano
+DEG$change = as.factor(ifelse(DEG$pvalue <0.05,ifelse(abs(DEG$log2FoldChange) > 1,ifelse(DEG$log2FoldChange > 1,"UP","DOWN"),"NOT"),"NOT"))
+this_tile = paste0('\nThe number of up gene is 1676 ',                   
+                   '\nThe number of down gene is 744')
+library(ggplot2)
+g=ggplot(DEG, aes(log2FoldChange, -log10(pvalue), col = change)) +
+  geom_point() +
+  theme_bw() +
+  scale_color_manual(values = c("blue","grey","red")) +
+  labs(x="log2 (fold change)",y="-log10 (p-value)") +
+  geom_hline(yintercept = -log10(10), lty=4,col="grey",lwd=0.6) +
+  geom_vline(xintercept = c(-1, 1), lty=4,col="grey",lwd=0.6) +
+  ggtitle(this_tile)+  
+   theme(legend.position = "none",
+        panel.grid=element_blank(),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 14)) 
+print(g)
+ggsave(g,filename = 'Deseq2-volcano.png')
+
+#ID转换
+rm(list = ls())
+load("DEseq.Rdata")
+library(clusterProfiler)
+library(org.Hs.eg.db)
+logFC_t=1
+DEG$g = ifelse(DEG$pvalue>0.05,'stable',ifelse(DEG$log2FoldChange>logFC_t,"UP",ifelse(DEG$log2FoldChange< -logFC_t,"DOWN","stable")))
+table(DEG$g)
+rownames(DEG)=gsub("\\.\\d*", "", rownames(DEG))
+DEG$ENSEMBL = rownames(DEG)
+gene.df = bitr(DEG$ENSEMBL,fromType = 'ENSEMBL',toType = c('SYMBOL','ENTREZID'),OrgDb = org.Hs.eg.db)
+DEG = merge(DEG,gene.df,by='ENSEMBL',all.x = T)
+save(DEG,gene.df,file = "DEseq-IDT-Rdata")
+
+#KEGG
+gene_up = DEG[DEG$g == "UP","ENTREZID"]
+gene_down = DEG[DEG$g == "DOWN","ENTREZID"]
+gene_diff = c(gene_up,gene_down)
+gene_all = as.character(DEG[,"ENTREZID"])
+
+
+kk.up <- enrichKEGG(gene         = gene_up,
+                    organism     = 'hsa',
+                    universe     = gene_all,
+                    pvalueCutoff = 0.9,
+                    qvalueCutoff =0.9)
+
+dotplot(kk.up )
+ggsave('kk.up.dotplot.png')
+kk.down <- enrichKEGG(gene         =  gene_down,
+                      organism     = 'hsa',
+                      universe     = gene_all,
+                      pvalueCutoff = 0.9,
+                      qvalueCutoff =0.9)
+dotplot(kk.down )
+ggsave('kk.down.dotplot.png')
+
+kk.diff <- enrichKEGG(gene         = gene_diff,
+                      organism     = 'hsa',
+                      pvalueCutoff = 0.05)
+dotplot(kk.diff )
+ggsave('kk.diff.dotplot.png')
+kegg_diff_dt <- as.data.frame(kk.diff)
+kegg_down_dt <- as.data.frame(kk.down)
+kegg_up_dt <- as.data.frame(kk.up)
+down_kegg<-kegg_down_dt[kegg_down_dt$p.adjust<0.05,];down_kegg$group=-1
+up_kegg<-kegg_up_dt[kegg_up_dt$p.adjust<0.05,];up_kegg$group=1
+kegg_plot <- function(up_kegg,down_kegg){
+  dat=rbind(up_kegg,down_kegg)
+  colnames(dat)
+  dat$qvalue = -log10(dat$qvalue)
+  dat$qvalue=dat$qvalue*dat$group 
+  
+  dat=dat[order(dat$qvalue,decreasing = F),]
+  
+  g_kegg<- ggplot(dat, aes(x=reorder(Description,order(qvalue, decreasing = F)), y=qvalue, fill=group)) + 
+    geom_bar(stat="identity") + 
+    scale_fill_gradient(low="blue",high="red",guide = FALSE) + 
+    scale_x_discrete(name ="Pathway names") +
+    scale_y_continuous(name ="log10p-adjust") +
+    coord_flip() + theme_bw()+theme(plot.title = element_text(hjust = 0.5))+
+    ggtitle("Pathway Enrichment") 
+}
+g_kegg=kegg_plot(up_kegg,down_kegg)
+print(g_kegg)
+ggsave(g_kegg,filename = 'kegg_up_down.png')
+#GSEA
+geneList=DEG$log2FoldChange
+names(geneList)=DEG$ENTREZID
+geneList=sort(geneList,decreasing = T)
+data(geneList, package="DOSE")
+kk_gse <- gseKEGG(geneList     = geneList,
+                  organism     = 'hsa',
+                  nPerm        = 1000,
+                  minGSSize    = 120,
+                  pvalueCutoff = 0.9,
+                  verbose      = FALSE)
+head(kk_gse)[,1:6]
+gseaplot(kk_gse, geneSetID = rownames(kk_gse[1,]))
+
+down_kegg<-kk_gse[kk_gse$pvalue<0.05 & kk_gse$enrichmentScore < 0,];down_kegg$group=-1
+up_kegg<-kk_gse[kk_gse$pvalue<0.05 & kk_gse$enrichmentScore > 0,];up_kegg$group=1
+
+g_kegg=kegg_plot(up_kegg,down_kegg)
+print(g_kegg)
+ggsave(g_kegg,filename = 'kegg_up_down_gsea.png')
+
+
+#Go analysis
+g_list=list(gene_up=gene_up,
+            gene_down=gene_down,
+            gene_diff=gene_diff)
+go_enrich_results <- lapply( g_list , function(gene) {
+  lapply( c('BP','MF','CC') , function(ont) {
+    cat(paste('Now process ',ont ))
+    ego <- enrichGO(gene          = gene,
+                    universe      = gene_all,
+                    OrgDb         = org.Hs.eg.db,
+                    ont           = ont ,
+                    pAdjustMethod = "BH",
+                    pvalueCutoff  = 0.99,
+                    qvalueCutoff  = 0.99,
+                    readable      = TRUE)
+    
+    print( head(ego) )
+    return(ego)})})
+save(go_enrich_results,file = 'go_enrich_results.Rdata')    
+n1= c('gene_up','gene_down','gene_diff')
+n2= c('BP','MF','CC') 
+for (i in 1:3){
+  for (j in 1:3){
+    fn=paste0('dotplot_',n1[i],'_',n2[j],'.png')
+    cat(paste0(fn,'\n'))
+    png(fn,res=150,width = 1850)
+    print( dotplot(go_enrich_results[[i]][[j]] ))
+    dev.off()
+  }
+}
+
+
+#GSEA
+geneList=DEG$log2FoldChange
+names(geneList)=DEG$SYMBOL
+geneList=sort(geneList,decreasing = T)
+d = "D:/R/project/RNA-seq/labRNA-seq/symbol"
+gmts = list.files(d,pattern = 'all')
+library(GSEABase)
+gsea_results = lapply(gmts,function(gmtfile){
+  geneset = read.gmt(file.path(d,gmtfile))
+  print(paste0("Now process the",gmtfile))
+  egmt = GSEA(geneList,TERM2GENE = geneset,verbose = FALSE)
+  return(egmt)
+})
+save(gsea_results,file = 'gsea_results.Rdata')
+gsea_results_list = lapply(gsea_results, function(x){
+  cat(paste(dim(x@result)),'\n')
+  x@result
+})
+gsea_results_df = do.call(rbind,gsea_results_list)
+gseaplot(gsea_results[[2]],'KEGG_CELL_CYCLE')
+gseaplot(gsea_results[[2]],'FARMER_BREAST_CANCER_CLUSTER_6')
+gseaplot(gsea_results[[5]],'GO_CONDENSED_CHROMOSOME_OUTER_KINETOCHORE')
+
+#path net
+library("pathview")
+library("gage")
+library("gageData")
+library("dplyr")
+data(kegg.sets.hs)
+data(sigmet.idx.hs)
+kegg.sets.hs =  kegg.sets.hs[sigmet.idx.hs]
+head(kegg.sets.hs,3)
+ sig.gene<-DEG
+ gene=gsub("\\.\\d*", "", sig.gene[,1])
+ row.names(sig.gene)<-gene
+ head(sig.gene)
+ foldchanges = sig.gene$log2FoldChange
+ names(foldchanges)= gene.df$ENTREZID
+ head(foldchanges)
+ keggres = gage(foldchanges, gsets = kegg.sets.hs, same.dir = TRUE)
+ lapply(keggres, head)
+#得到pathway
+ keggrespathways = data.frame(id=rownames(keggres$greater), keggres$greater) %>%
+  tbl_df() %>%
+  filter(row_number()<=10) %>%
+  .$id %>%
+  as.character()
+#  keggrespathways
+  # Get the IDs.
+keggresids = substr(keggrespathways, start=1, stop=8)
+keggresids
+# 先定义画图函数
+plot_pathway = function(pid) pathview(gene.data=foldchanges, pathway.id=pid, species="hsa", new.signature=FALSE)
+# 同时画多个pathways，这些plots自动存到工作目录
+tmp = sapply(keggresids, function(pid) pathview(gene.data=foldchanges, pathway.id=pid, species="hsa"))
