@@ -37,6 +37,12 @@ choose_matrix = exprSet[choose_gene,]
 choose_matrix = t(scale(t(choose_matrix)))
 pheatmap(choose_matrix,filename = 'DEG_top100_heatmap.png')
 
+#PCA
+vsdata <- vst(dds, blind=FALSE)
+png(paste("PCA.png", sep=""))
+plotPCA(vsdata, intgroup="group_list")
+dev.off()
+
 #volcano
 DEG$change = as.factor(ifelse(DEG$pvalue <0.05,ifelse(abs(DEG$log2FoldChange) > 1,ifelse(DEG$log2FoldChange > 1,"UP","DOWN"),"NOT"),"NOT"))
 this_tile = paste0('\nThe number of up gene is 1676 ',                   
