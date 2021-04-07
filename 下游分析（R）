@@ -1,13 +1,12 @@
 #载入表达矩阵，处理矩阵数据
 rm(list = ls())
 a=read.table('d:/R/expr.txt')
-a=a[,c(1,2,4,6,8,10,12)]
-exprSet = a[1:60564,]
+exprSet = a[1:60564,c(1,2,4,6,8,10,12)]
 rownames(exprSet) = exprSet[,1]
 exprSet = exprSet[,-1]
 colnames(exprSet) = c('H1','H2','H4','N1', 'N2','N4')
 exprSet = as.matrix(exprSet)
-group_list=c('H','H','H','N', 'N','N')
+group_list = c(rep("H",3),rep("N",3))
 
 #DEG差异分析（DEseq2）
 library(DESeq2)
@@ -24,24 +23,37 @@ res <- results(dds,
                contrast=c("group_list","H","N"))
 resOrdered <- res[order(res$padj),]
 DEG = as.data.frame(resOrdered)
+
+DEG$g = ifelse(DEG$pvalue>0.05,'stable',ifelse(DEG$log2FoldChange>1,"UP",ifelse(DEG$log2FoldChange< -1,"DOWN","stable")))
+table(DEG$g)
 save(DEG,file = "DEseq.Rdata")
 
-#保存差异基因
-diff_gene_deseq2 <-subset(res, pvalue < 0.1 & abs(log2FoldChange) > 1)
-write.csv(diff_gene_deseq2,file= "DEG0.5.csv")
+#check na
+library("visdat")
+vis_dat(DEG)
+DEG = DEG[!is.na(DEG$pvalue),]
 
-#heatmap
-library(pheatmap)
-choose_gene = head(rownames(DEG),100)
-choose_matrix = exprSet[choose_gene,]
-choose_matrix = t(scale(t(choose_matrix)))
-pheatmap(choose_matrix,filename = 'DEG_top100_heatmap.png')
+#ID转换
+library(clusterProfiler)
+library(org.Hs.eg.db)
+rownames(DEG)=gsub("\\.\\d*", "", rownames(DEG))
+DEG$ENSEMBL = rownames(DEG)
+gene.df = bitr(DEG$ENSEMBL,fromType = 'ENSEMBL',toType = c('SYMBOL','ENTREZID'),OrgDb = org.Hs.eg.db)
+DEG = merge(DEG,gene.df,by='ENSEMBL',all.x = T)
+save(DEG,gene.df,file = "DEseq-IDT-Rdata")
 
 #PCA
 vsdata <- vst(dds, blind=FALSE)
 png(paste("PCA.png", sep=""))
 plotPCA(vsdata, intgroup="group_list")
 dev.off()
+
+#heatmap
+library(pheatmap)
+choose_gene = DEG[DEG$g!='stable',]$ENSEMBL
+choose_matrix = exprSet[choose_gene,]
+choose_matrix = t(scale(t(choose_matrix)))
+pheatmap(choose_matrix,filename = 'DEG_heatmap.png')
 
 #volcano
 DEG$change = as.factor(ifelse(DEG$pvalue <0.05,ifelse(abs(DEG$log2FoldChange) > 1,ifelse(DEG$log2FoldChange > 1,"UP","DOWN"),"NOT"),"NOT"))
@@ -63,19 +75,6 @@ g=ggplot(DEG, aes(log2FoldChange, -log10(pvalue), col = change)) +
 print(g)
 ggsave(g,filename = 'Deseq2-volcano.png')
 
-#ID转换
-rm(list = ls())
-load("DEseq.Rdata")
-library(clusterProfiler)
-library(org.Hs.eg.db)
-logFC_t=1
-DEG$g = ifelse(DEG$pvalue>0.05,'stable',ifelse(DEG$log2FoldChange>logFC_t,"UP",ifelse(DEG$log2FoldChange< -logFC_t,"DOWN","stable")))
-table(DEG$g)
-rownames(DEG)=gsub("\\.\\d*", "", rownames(DEG))
-DEG$ENSEMBL = rownames(DEG)
-gene.df = bitr(DEG$ENSEMBL,fromType = 'ENSEMBL',toType = c('SYMBOL','ENTREZID'),OrgDb = org.Hs.eg.db)
-DEG = merge(DEG,gene.df,by='ENSEMBL',all.x = T)
-save(DEG,gene.df,file = "DEseq-IDT-Rdata")
 
 #KEGG
 gene_up = DEG[DEG$g == "UP","ENTREZID"]
@@ -129,26 +128,6 @@ kegg_plot <- function(up_kegg,down_kegg){
 g_kegg=kegg_plot(up_kegg,down_kegg)
 print(g_kegg)
 ggsave(g_kegg,filename = 'kegg_up_down.png')
-#GSEA
-geneList=DEG$log2FoldChange
-names(geneList)=DEG$ENTREZID
-geneList=sort(geneList,decreasing = T)
-data(geneList, package="DOSE")
-kk_gse <- gseKEGG(geneList     = geneList,
-                  organism     = 'hsa',
-                  nPerm        = 1000,
-                  minGSSize    = 120,
-                  pvalueCutoff = 0.9,
-                  verbose      = FALSE)
-head(kk_gse)[,1:6]
-gseaplot(kk_gse, geneSetID = rownames(kk_gse[1,]))
-
-down_kegg<-kk_gse[kk_gse$pvalue<0.05 & kk_gse$enrichmentScore < 0,];down_kegg$group=-1
-up_kegg<-kk_gse[kk_gse$pvalue<0.05 & kk_gse$enrichmentScore > 0,];up_kegg$group=1
-
-g_kegg=kegg_plot(up_kegg,down_kegg)
-print(g_kegg)
-ggsave(g_kegg,filename = 'kegg_up_down_gsea.png')
 
 
 #Go analysis
@@ -182,8 +161,56 @@ for (i in 1:3){
   }
 }
 
-
 #GSEA
+geneList=DEG$log2FoldChange
+names(geneList)=DEG$ENTREZID
+geneList=sort(geneList,decreasing = T)
+data(geneList, package="DOSE")
+kk_gse <- gseKEGG(geneList     = geneList,
+                  organism     = 'hsa',
+                  nPerm        = 1000,
+                  minGSSize    = 120,
+                  pvalueCutoff = 0.9,
+                  verbose      = FALSE)
+library(enrichplot)
+pdf(paste("GSEA_GO.pdf", sep=""),width=15,height=20)
+gseaplot2(kk_gse ,1:10, pvalue_table = TRUE) 
+dev.off()
+down_kegg<-kk_gse[kk_gse$pvalue<0.05 & kk_gse$enrichmentScore < 0,];down_kegg$group=-1
+up_kegg<-kk_gse[kk_gse$pvalue<0.05 & kk_gse$enrichmentScore > 0,];up_kegg$group=1
+g_kegg=kegg_plot(up_kegg,down_kegg)
+print(g_kegg)
+ggsave(g_kegg,filename = 'kegg_up_down_gsea.png')
+
+gsea_result = lapply(c('BP','MF','CC') , function(ont) {
+  gseago = gseGO(geneList ,
+                 OrgDb = org.Hs.eg.db,
+                 ont = ont,
+                 nPerm = 1000,
+                 minGSSize = 100,
+                 maxGSSize    = 500,
+                 pvalueCutoff = 0.05,
+                 verbose = FALSE)
+  down_go<-head(gseago[gseago$pvalue<0.05 & gseago$enrichmentScore < 0,],10);down_go$group=-1
+  up_go<-head(gseago[gseago$pvalue<0.05 & gseago$enrichmentScore > 0,],10);up_go$group=1
+  g_go=kegg_plot(up_go,down_go)
+  fn=paste0('GO_GSEA_',ont,'.png')
+  png(fn,res=150,width = 1850)
+  print(g_go)
+  dev.off()})
+gseago = gseGO(geneList ,
+                 OrgDb = org.Hs.eg.db,
+                 ont = 'all',
+                 nPerm = 1000,
+                 minGSSize = 10,
+                 pvalueCutoff = 0.05,
+                 verbose = FALSE)
+pdf(paste("GSEA_GO.pdf", sep=""),width=15,height=20)
+gseaplot2(gseago ,1:10, pvalue_table = TRUE) 
+dev.off()
+
+
+#spical GSEA
 geneList=DEG$log2FoldChange
 names(geneList)=DEG$SYMBOL
 geneList=sort(geneList,decreasing = T)
