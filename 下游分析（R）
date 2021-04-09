@@ -24,7 +24,7 @@ res <- results(dds,
 resOrdered <- res[order(res$padj),]
 DEG = as.data.frame(resOrdered)
 
-DEG$g = ifelse(DEG$pvalue<0.05,'stable',ifelse(DEG$log2FoldChange>1,"UP",ifelse(DEG$log2FoldChange< -1,"DOWN","stable")))
+DEG$g = ifelse(DEG$pvalue>0.05,'stable',ifelse(DEG$log2FoldChange>1,"UP",ifelse(DEG$log2FoldChange< -1,"DOWN","stable")))
 table(DEG$g)
 save(DEG,file = "DEseq.Rdata")
 
