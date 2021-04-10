@@ -173,7 +173,7 @@ kk_gse <- gseKEGG(geneList     = geneList,
                   pvalueCutoff = 0.9,
                   verbose      = FALSE)
 library(enrichplot)
-pdf(paste("GSEA_GO.pdf", sep=""),width=15,height=20)
+pdf(paste("GSEA_KEGG.pdf", sep=""),width=15,height=20)
 gseaplot2(kk_gse ,1:10, pvalue_table = TRUE) 
 dev.off()
 down_kegg<-kk_gse[kk_gse$pvalue<0.05 & kk_gse$enrichmentScore < 0,];down_kegg$group=-1
